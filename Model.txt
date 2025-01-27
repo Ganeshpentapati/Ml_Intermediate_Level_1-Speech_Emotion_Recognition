@@ -1,0 +1,375 @@
+import kagglehub
+import os
+import librosa
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt  # for visualizations
+import seaborn as sns            # for visualizations
+import librosa.display
+import joblib
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, accuracy_score
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import confusion_matrix
+
+# STEP-1(Data gathering):
+
+# Download latest version of the dataset
+path = kagglehub.dataset_download("uwrfkaggler/ravdess-emotional-speech-audio")
+
+print("Path to dataset files:", path)
+
+# Set dataset path
+dataset_path = path
+
+
+# Initialize lists
+audio_data = []
+
+labels = []
+
+# Emotion mapping
+emotion_map = {
+    '01': 'neutral',
+    '02': 'calm',
+    '03': 'happy',
+    '04': 'sad',
+    '05': 'angry',
+    '06': 'fearful',
+    '07': 'disgust',
+    '08': 'surprised'
+}
+
+# STEP-2(Preprocessing the data):
+
+# Iterate through all folders (e.g., Actor_01, Actor_02)
+for folder in os.listdir(dataset_path):
+    folder_path = os.path.join(dataset_path, folder)
+    if os.path.isdir(folder_path):
+        for file in os.listdir(folder_path):
+            if file.endswith('.wav'):  # Only process WAV files
+                file_path = os.path.join(folder_path, file)
+
+                # Load the audio file
+                audio, sr = librosa.load(file_path, sr=None)
+
+                # Extract features (e.g., MFCC)
+                mfccs = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=30)
+                mfccs_mean = np.mean(mfccs.T, axis=0)  # Take the mean across time
+
+                # print(mfccs[0])
+                # print(mfccs_mean[0])
+                # Append features
+                audio_data.append(mfccs_mean)
+
+                 # Data Augmentation
+                # 1. Add Gaussian noise
+                noise = np.random.normal(0, 0.02, len(audio))
+                audio_noise = audio + noise
+                mfccs_noise = librosa.feature.mfcc(y=audio_noise, sr=sr, n_mfcc=30)
+                mfccs_noise_mean = np.mean(mfccs_noise.T, axis=0)
+                audio_data.append(mfccs_noise_mean)
+
+                # 2. Time stretch
+                audio_stretch = librosa.effects.time_stretch(audio, rate=1.1)  # Speed up
+                mfccs_stretch = librosa.feature.mfcc(y=audio_stretch, sr=sr, n_mfcc=30)
+                mfccs_stretch_mean = np.mean(mfccs_stretch.T, axis=0)
+                audio_data.append(mfccs_stretch_mean)
+
+                # 3. Pitch shift
+                audio_pitch = librosa.effects.pitch_shift(audio, sr=sr, n_steps=2)  # Shift pitch up
+                mfccs_pitch = librosa.feature.mfcc(y=audio_pitch, sr=sr, n_mfcc=30)
+                mfccs_pitch_mean = np.mean(mfccs_pitch.T, axis=0)
+                audio_data.append(mfccs_pitch_mean)
+
+                # Add the same label for each augmented audio
+                emotion_code = file.split('-')[2]
+                emotion_label = emotion_map[emotion_code]
+                labels.extend([emotion_label] * 4)  # Original + 3 augmentations
+
+                # Extract emotion label from filename
+            #    emotion_code = file.split('-')[2]        # Read dataset desc in kaggle.
+            #    labels.append(emotion_map[emotion_code])
+
+print(audio_data)
+
+# Convert to DataFrame
+df = pd.DataFrame(audio_data)
+df['label'] = labels            # adding labels(emotion categorizing for each
+# print(df)                                #    record in 1440 records) column.
+# print(df.head())
+# print(df.describe())
+# print(labels)
+# print(df)
+
+# Separate features and labels
+features = df.iloc[:, :-1]  # All columns except the last one (features)
+labels = df.iloc[:, -1]     # Last column (labels)
+
+
+# Normalize the features using StandardScaler
+scaler = StandardScaler()
+normalized_features = scaler.fit_transform(features)
+
+# Convert normalized features back to a DataFrame
+normalized_df = pd.DataFrame(normalized_features, columns=df.columns[:-1])
+normalized_df['label'] = labels  # Add the labels back to the DataFrame
+# print(normalized_df['label'])
+# Save normalized data to a CSV file
+normalized_df.to_csv('normalized_audio_features.csv', index=False)
+
+print("Preprocessing complete. Normalized features saved to 'normalized_audio_features.csv'.")
+
+# Splitting Dataset into Training and Testing(datasets):
+
+X = df.iloc[:, :-1].values
+y = df['label'].values
+
+# Step-a: Encode labels (convert emotions into numerical values)
+label_encoder = LabelEncoder()
+y_encoded = label_encoder.fit_transform(y)
+
+# Step-b: Split data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.2, random_state=42)
+
+'''
+# Step-c: Train a machine learning model (e.g., Random Forest Classifier)
+model = RandomForestClassifier(n_estimators=100, random_state=42)
+model.fit(X_train, y_train)
+
+# Step-d: Evaluate the model
+y_pred = model.predict(X_test)
+accuracy = accuracy_score(y_test, y_pred)
+print(f"Accuracy: {accuracy * 100:.2f}%")
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred, target_names=label_encoder.classes_))
+
+'''
+
+# STEP-3(Hyperparameter Tuning, Model Selection and Evaluation):
+# Define the parameter grid for Random Forest
+param_grid = {
+    'n_estimators': [50, 100, 200],       # Number of trees in the forest
+    'max_depth': [None, 10, 20, 30],     # Maximum depth of the tree
+    'min_samples_split': [2, 5, 10],     # Minimum number of samples required to split a node
+    'min_samples_leaf': [1, 2, 4],       # Minimum number of samples required to be at a leaf node
+    'bootstrap': [True, False]           # Whether bootstrap samples are used when building trees
+}
+
+# Initialize the Random Forest Classifier
+rf = RandomForestClassifier(random_state=42)
+
+
+# Perform grid search
+grid_search = GridSearchCV(estimator=rf, param_grid=param_grid,
+                           scoring='accuracy', cv=3, verbose=2, n_jobs=-1)
+
+# Fit grid search to the data
+grid_search.fit(X_train, y_train)
+
+# Print the best parameters and corresponding score
+print("Best parameters found: ", grid_search.best_params_)
+print("Best accuracy found: ", grid_search.best_score_)
+
+# Use the best model to predict on the test set
+best_model = grid_search.best_estimator_
+y_pred = best_model.predict(X_test)
+
+# Evaluate the tuned model
+accuracy = accuracy_score(y_test, y_pred)
+print(f"Tuned Model Accuracy: {accuracy * 100:.2f}%")
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred, target_names=label_encoder.classes_))
+
+# This line is to save the label encoder's classes:
+
+np.save('label_classes.npy', label_encoder.classes_)
+
+# STEP-4(Visualizations before deployment):
+
+# PLOT-1
+# Plot the 'Distribution of Emotions' in the dataset:
+
+plt.figure(figsize=(10, 6))
+sns.countplot(x=labels, order=labels.value_counts().index, palette="viridis")
+plt.title("Distribution of Emotions in the Dataset", fontsize=16)
+plt.xlabel("Emotions", fontsize=12)
+plt.ylabel("Count", fontsize=12)
+plt.xticks(rotation=45)
+plt.show()
+
+#PLOT-2(Feature Analysis)
+# Calculate correlation matrix:
+
+corr_matrix = pd.DataFrame(audio_data).corr()
+
+# Plot the heatmap
+plt.figure(figsize=(12, 8))
+sns.heatmap(corr_matrix, cmap="coolwarm", annot=False, fmt=".2f")
+plt.title("Correlation Heatmap of Extracted Features", fontsize=16)
+plt.show()
+
+#PLOT-3(Feature Distribution (Histograms))
+# Visualize the first 10 features individually:
+
+normalized_features_df = pd.DataFrame(normalized_features, columns=df.columns[:-1])
+
+plt.figure(figsize=(15, 10))
+for i in range(10):  # Plot the first 10 features
+    plt.subplot(5, 2, i + 1)
+    sns.histplot(normalized_features_df.iloc[:, i], kde=True, bins=30, color='blue')
+    plt.title(f"Feature {i + 1}")
+plt.tight_layout()
+plt.show()
+
+
+#PLOT-4(Model Performance Visualization)
+
+# Visualizing the confusion matrix helps evaluate where the model performs
+# well and where it struggles:
+
+conf_matrix = confusion_matrix(y_test, y_pred)
+
+# Plot the confusion matrix
+plt.figure(figsize=(10, 8))
+sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues',
+            xticklabels=label_encoder.classes_,
+            yticklabels=label_encoder.classes_)
+plt.title("Confusion Matrix", fontsize=16)
+plt.xlabel("Predicted Label", fontsize=12)
+plt.ylabel("True Label", fontsize=12)
+plt.show()
+
+
+# STEP - 5(Downloading the Model for Deployment):
+
+# Save the trained model for future use (optional):
+
+joblib.dump(rf, 'emotion_recognition_model.pkl')
+
+# Download the model:
+
+from google.colab import files
+files.download('emotion_recognition_model.pkl')
+
+from google.colab import files
+files.download('label_classes.npy')
+
+
+'''
+# 2nd Approach:
+
+
+# Enhanced Feature Engineering Pipeline (Step 4)
+enhanced_audio_data = []  # To store enhanced features
+labels = []  # Keep labels as they are
+
+
+# Emotion mapping
+emotion_map = {
+    '01': 'neutral',
+    '02': 'calm',
+    '03': 'happy',
+    '04': 'sad',
+    '05': 'angry',
+    '06': 'fearful',
+    '07': 'disgust',
+    '08': 'surprised'
+}
+
+# Iterate through all folders (e.g., Actor_01, Actor_02)
+for folder in os.listdir(dataset_path):
+    folder_path = os.path.join(dataset_path, folder)
+    if os.path.isdir(folder_path):
+        for file in os.listdir(folder_path):
+            if file.endswith('.wav'):  # Only process WAV files
+                file_path = os.path.join(folder_path, file)
+
+                # Load the audio file
+                audio, sr = librosa.load(file_path, sr=None)
+
+                # Extract features
+                mfccs = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=30)  # MFCC features
+                spectral_contrast = librosa.feature.spectral_contrast(y=audio, sr=sr)  # Spectral contrast
+                chroma = librosa.feature.chroma_stft(y=audio, sr=sr)  # Chroma features
+                zero_crossings = librosa.feature.zero_crossing_rate(y=audio)  # Zero-crossing rate
+
+                # Aggregate features (mean or other statistical summaries)
+                mfccs_mean = np.mean(mfccs.T, axis=0)
+                spectral_contrast_mean = np.mean(spectral_contrast.T, axis=0)
+                chroma_mean = np.mean(chroma.T, axis=0)
+                zero_crossings_mean = np.mean(zero_crossings)  # Extract the scalar mean directly
+
+                # print(zero_crossings_mean)
+                # Combine all features into one vector
+                feature_vector = np.concatenate((mfccs_mean, spectral_contrast_mean, chroma_mean, [zero_crossings_mean]))
+
+                # Append features and labels
+                enhanced_audio_data.append(feature_vector)
+
+                # Extract emotion label from filename
+                emotion_code = file.split('-')[2]
+                labels.append(emotion_map[emotion_code])
+
+# Convert to DataFrame
+enhanced_df = pd.DataFrame(enhanced_audio_data)
+enhanced_df['label'] = labels
+
+# Save enhanced data to a CSV file
+enhanced_df.to_csv('enhanced_audio_features.csv', index=False)
+
+print("Feature engineering complete. Enhanced features saved to 'enhanced_audio_features.csv'.")
+
+# Continue with the same model selection and evaluation process
+# Normalize the enhanced features
+features = enhanced_df.iloc[:, :-1]
+labels = enhanced_df['label']
+
+scaler = StandardScaler()
+normalized_features = scaler.fit_transform(features)
+
+# Encode labels
+label_encoder = LabelEncoder()
+y_encoded = label_encoder.fit_transform(labels)
+
+# Split data into training and testing sets
+X_train, X_test, y_train, y_test = train_test_split(normalized_features, y_encoded, test_size=0.2, random_state=42)
+
+# STEP-4(Hyperparameter Tuning):
+# Define the parameter grid for Random Forest
+param_grid = {
+    'n_estimators': [50, 100, 200],       # Number of trees in the forest
+    'max_depth': [None, 10, 20, 30],     # Maximum depth of the tree
+    'min_samples_split': [2, 5, 10],     # Minimum number of samples required to split a node
+    'min_samples_leaf': [1, 2, 4],       # Minimum number of samples required to be at a leaf node
+    'bootstrap': [True, False]           # Whether bootstrap samples are used when building trees
+}
+
+# Initialize the Random Forest Classifier
+rf = RandomForestClassifier(random_state=42)
+
+
+# Perform grid search
+grid_search = GridSearchCV(estimator=rf, param_grid=param_grid,
+                           scoring='accuracy', cv=3, verbose=2, n_jobs=-1)
+
+# Fit grid search to the data
+grid_search.fit(X_train, y_train)
+
+# Print the best parameters and corresponding score
+print("Best parameters found: ", grid_search.best_params_)
+print("Best accuracy found: ", grid_search.best_score_)
+
+# Use the best model to predict on the test set
+best_model = grid_search.best_estimator_
+y_pred = best_model.predict(X_test)
+
+# Evaluate the tuned model
+accuracy = accuracy_score(y_test, y_pred)
+print(f"Tuned Model Accuracy: {accuracy * 100:.2f}%")
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred, target_names=label_encoder.classes_))
+'''
